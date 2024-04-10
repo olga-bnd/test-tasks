@@ -1,0 +1,208 @@
+- name: test task
+
+  hosts: server3
+
+  vars:
+      project_dir:   /var/www/project.local
+      root_password: qwerty
+      db_user:       user_test
+      user_password: pwd12345
+      db_name:       db_test
+      host:          localhost
+    
+  tasks:
+
+      - name: Create a directory for project
+        ansible.builtin.file:
+            path: "{{ project_dir }}"
+            state: directory
+            
+### install php
+      - name: Install php
+        ansible.builtin.apt:
+            name:
+                - php-fpm
+                - php8.2-mysql
+            state: present
+            update_cache: yes
+
+      - name: Enable php8.2-fpm.service
+        ansible.builtin.systemd_service:
+            name:    php8.2-fpm.service
+            enabled: true            
+
+            
+### install and configure nginx
+      - name: Install nginx
+        ansible.builtin.apt:
+            name:  nginx
+            state: latest
+            update_cache: yes
+            
+      - name: Configuring nginx
+        ansible.builtin.copy:
+            content: |
+                server {
+                    listen 80;
+                    server_name project.local;
+                    root {{ project_dir }};
+                    index index.php;
+                    
+                    access_log /var/log/nginx/project.local__access.log;
+                    error_log  /var/log/nginx/project.local__error.log;
+                
+                    location / {
+                        try_files $uri $uri/ /index.php?$args;
+                    }
+                
+                    location ~* \.(gif|jpg|jpeg|png|ico|css|js)$ {
+                        try_files $uri =404;
+                        access_log off;
+                    }
+                
+                    location ~* \.php$ {
+                        fastcgi_pass    unix:/run/php/php8.2-fpm.sock;
+                        fastcgi_param   SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+                        include         fastcgi_params;
+                    }
+                }
+            dest: /etc/nginx/sites-available/project.conf
+
+      - name: Remove file default
+        ansible.builtin.file:
+            path: /etc/nginx/sites-enabled/default
+            state: absent
+
+      - name: Create a symbolic link to conf file
+        ansible.builtin.file:
+          src:   /etc/nginx/sites-available/project.conf
+          dest:  /etc/nginx/sites-enabled/project.link
+          state: link
+          
+      - name: restart nginx 
+        ansible.builtin.systemd_service:
+            name:  nginx
+            state: reloaded       
+
+      - name: Enable nginx
+        ansible.builtin.systemd_service:
+            name:    nginx
+            enabled: true               
+          
+
+### install mariadb          
+      - name: Install mariadb
+        ansible.builtin.apt:
+            name:  mariadb-server
+            state: latest
+            update_cache: yes
+
+      - name: Enable mariadb.service
+        ansible.builtin.systemd_service:
+            name:    mariadb.service
+            enabled: true   
+
+      - name: Install python3-pymysql 
+        ansible.builtin.apt:
+            name:  python3-pymysql
+            state: latest
+            update_cache: yes
+            
+### Configure mariadb            
+      - name: Create root user
+        ansible.builtin.shell: |
+            sudo mysql_secure_installation <<EOF
+            
+            y
+            {{ root_password }}
+            {{ root_password }}
+            y
+            y
+            y
+            y
+            EOF
+
+      - name: Create a new database 
+        community.mysql.mysql_db:
+            name: "{{ db_name }}"
+            state: present
+            login_unix_socket: /var/run/mysqld/mysqld.sock
+            login_user: root
+            login_password: "{{ root_password }}"
+            
+      - name: Create a user with password and privileges
+        community.mysql.mysql_user:
+            name:      "{{ db_user }}"
+            password:  "{{ user_password }}"
+            state:      present
+            priv:
+                "{{ db_name }}.*:ALL,GRANT"
+            login_unix_socket: /var/run/mysqld/mysqld.sock
+            login_user: root
+            login_password: "{{ root_password }}"            
+
+### wordpress 
+      - name: Install auxiliary apps
+        ansible.builtin.apt:
+            name:
+                - wget
+                - tar
+            state: present
+            update_cache: yes
+            
+      - name: Download wordpress
+        ansible.builtin.get_url:
+            url: https://wordpress.org/latest.tar.gz
+            dest: /tmp/wordpress.tar.gz
+            
+      - name: Extract latest.tar.gz  
+        ansible.builtin.unarchive:
+            src:  /tmp/wordpress.tar.gz
+            dest: "{{ project_dir }}"
+            remote_src: yes
+            extra_opts: [--strip-components=1]
+            owner: root
+            group: root
+            
+      - name: Create config for the project
+        ansible.builtin.copy:
+            src: "{{ project_dir }}/wp-config-sample.php"
+            dest: "{{ project_dir }}/wp-config.php"
+            remote_src: yes
+
+
+### Change information about database and user in config file
+      - name: Change information about a database
+        ansible.builtin.replace:
+            path: "{{ project_dir }}/wp-config.php"
+            regexp:  " 'DB_NAME', 'database_name_here' "
+            replace: " 'DB_NAME', '{{ db_name }}' "
+            
+      - name: Change information about a user
+        ansible.builtin.replace:
+            path: "{{ project_dir }}/wp-config.php"  
+            regexp:  " 'DB_USER', 'username_here' "
+            replace: " 'DB_USER', '{{ db_user }}' "
+            
+      - name: Change password for a user
+        ansible.builtin.replace:
+            path: "{{ project_dir }}/wp-config.php"
+            regexp:  " 'DB_PASSWORD', 'password_here' "
+            replace: " 'DB_PASSWORD', '{{ user_password }}' "
+            
+      - name: Change information about host
+        ansible.builtin.replace:
+            path: "{{ project_dir }}/wp-config.php"
+            regexp:  " 'DB_HOST', 'localhost' "
+            replace: " 'DB_HOST', '{{ host }}' "
+
+            
+### Change user and group for dir of project 
+      - name:
+        ansible.builtin.file:
+            path: /var/www
+            owner: www-data
+            group: www-data
+            mode: '0755'
+            recurse: yes 
+        

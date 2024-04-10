@@ -1,0 +1,62 @@
+#!/bin/bash
+
+echo "Install packs"
+sudo apt update
+sudo apt install mariadb-server
+sudo apt install php-fpm
+sudo apt install php8.2-mysql
+sudo apt install nginx
+sudo apt install wget
+sudo apt install tar
+
+sudo systemctl enable mariadb.service
+sudo systemctl enable php8.2-fpm.service
+sudo systemctl enable nginx
+
+sudo mkdir /var/www/project.local
+
+echo "Configuring nginx"
+sudo cp ~/project.conf /etc/nginx/sites-available/project.conf
+cd /etc/nginx/sites-enabled/
+sudo rm default
+sudo ln -s /etc/nginx/sites-available/project.conf project.link
+sudo systemctl restart nginx
+
+
+root_passwd="secret"
+db_user="user_test"
+user_passwd="123"
+db_name="db_test"
+host="localhost"
+
+echo "Start mysql_secure_installation"
+
+sudo mysql_secure_installation <<EOF
+
+y
+$root_passwd
+$root_passwd
+y
+y
+y
+y
+EOF
+
+echo "Create DB and user with privileges on it"
+sudo mysql -u root -p$root_passwd -e "CREATE DATABASE IF NOT EXISTS $db_name; CREATE USER '$db_user'@'$host' IDENTIFIED BY '$user_passwd'; GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'$host';"
+
+echo "Download wordpress"
+cd /tmp
+wget https://wordpress.org/latest.tar.gz
+tar -xzvf latest.tar.gz
+sudo cp -a /tmp/wordpress/. /var/www/project.local/
+
+echo "Create config for our project"
+sudo cp /var/www/project.local/wp-config-sample.php /var/www/project.local/wp-config.php
+sudo sed -i "s/database_name_here/$db_name/" /var/www/project.local/wp-config.php
+sudo sed -i "s/username_here/$db_user/" /var/www/project.local/wp-config.php
+sudo sed -i "s/password_here/$user_passwd/" /var/www/project.local/wp-config.php
+sudo sed -i "s/localhost/$host/" /var/www/project.local/wp-config.php
+
+echo "Change group and owner for folder and files with project"
+sudo chown -R www-data:www-data /var/www/project.local/
